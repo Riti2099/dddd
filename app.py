@@ -33,7 +33,7 @@ saying = False
 video_stream = None
 stream_active = False
 
-# Initialize detector and predictor
+# Initialize your detector and predictor
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("/home/ubuntu/dddd/shape_predictor_68_face_landmarks.dat")
 
@@ -44,18 +44,34 @@ def compute_ear(eye):
     ear = (A + B) / (2.0 * C)
     return ear
 
+def check_drowsy(shape):
+    (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
+    (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
+    leftEye = shape[lStart:lEnd]
+    rightEye = shape[rStart:rEnd]
+    leftEAR = compute_ear(leftEye)
+    rightEAR = compute_ear(rightEye)
+    ear = (leftEAR + rightEAR) / 2.0
+    return (ear, leftEye, rightEye)
+
+def check_yawn(shape):
+    top_lip = shape[50:53]
+    top_lip = np.concatenate((top_lip, shape[61:64]))
+    low_lip = shape[56:59]
+    low_lip = np.concatenate((low_lip, shape[65:68]))
+    top_mean = np.mean(top_lip, axis=0)
+    low_mean = np.mean(low_lip, axis=0)
+    distance = abs(top_mean[1] - low_mean[1])
+    return distance
+
 def generate_frames():
     global video_stream, COUNTER, stream_active, alarm_status, alarm_status2
     
     try:
         if video_stream is None:
-            try:
-                video_stream = VideoStream(src=0).start()
-                time.sleep(2.0)
-                stream_active = True
-            except Exception as e:
-                print(f"Error initializing VideoStream: {e}")
-                return
+            video_stream = VideoStream(src=0).start()
+            time.sleep(2.0)
+            stream_active = True
 
         while stream_active:
             frame = video_stream.read()
@@ -72,23 +88,53 @@ def generate_frames():
             for rect in rects:
                 shape = predictor(gray, rect)
                 shape = face_utils.shape_to_np(shape)
-
-                # Draw facial features
-                cv2.polylines(frame, [shape[0:17]], False, (0, 255, 255), 1)  # Jawline
-                cv2.polylines(frame, [shape[27:36]], True, (255, 255, 0), 1)  # Nose
-                cv2.drawContours(frame, [cv2.convexHull(shape[48:60])], -1, (255, 0, 0), 1)  # Mouth
                 
-                ear = (compute_ear(shape[36:42]) + compute_ear(shape[42:48])) / 2.0
+                # Draw eye contours
+                (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
+                (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
+                leftEye = shape[lStart:lEnd]
+                rightEye = shape[rStart:rEnd]
+                leftEyeHull = cv2.convexHull(leftEye)
+                rightEyeHull = cv2.convexHull(rightEye)
+                cv2.drawContours(frame, [leftEyeHull], -1, (0, 255, 0), 1)
+                cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 0), 1)
+                
+                # Draw mouth contour
+                mouth = shape[48:60]
+                cv2.drawContours(frame, [cv2.convexHull(mouth)], -1, (255, 0, 0), 1)
+                
+                # Draw jawline
+                jaw = shape[0:17]
+                cv2.polylines(frame, [jaw], False, (0, 255, 255), 1)
+                
+                # Draw nose contour
+                nose = shape[27:36]
+                cv2.polylines(frame, [nose], True, (255, 255, 0), 1)
+                
+                ear, _, _ = check_drowsy(shape)
+                distance = check_yawn(shape)
+                
                 if ear < EYE_AR_THRESH:
                     COUNTER += 1
                     if COUNTER >= EYE_AR_CONSEC_FRAMES:
                         alarm_status = True
-                    cv2.putText(frame, "DROWSINESS ALERT!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    cv2.putText(frame, "DROWSINESS ALERT!", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 else:
                     COUNTER = 0
                     alarm_status = False
                 
-                cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                if distance > YAWN_THRESH:
+                    alarm_status2 = True
+                    cv2.putText(frame, "Yawn Alert", (10, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                else:
+                    alarm_status2 = False
+                
+                cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(frame, f"YAWN: {distance:.2f}", (300, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
             ret, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes()
